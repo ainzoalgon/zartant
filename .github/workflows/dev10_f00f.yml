@@ -1,0 +1,52 @@
+name: DEV10 — F00F Ranking
+
+on:
+  workflow_dispatch:
+    inputs:
+      f00g_run_id:
+        description: "Run ID du workflow F00G (pour récupérer le workflow.json)"
+        required: true
+        type: string
+
+jobs:
+  f00f:
+    name: "F00F — Ranking Prep"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Télécharger le workflow depuis F00G
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          run_id: ${{ inputs.f00g_run_id }}
+          name: workflow-dev10
+          path: F00G/OUT/
+
+      - name: Exécuter F00F
+        run: |
+          python3 F00F/CODEBASE/f00f.py --workflow F00G/OUT/workflow.json
+
+      - name: Vérifier la sortie
+        run: |
+          if [ ! -f F00F/OUT/ranking_sources.json ]; then
+            echo "❌ ranking_sources.json non généré"
+            exit 1
+          fi
+          echo "✅ Ranking préparé :"
+          cat F00F/OUT/ranking_sources.json
+
+      - name: Upload ranking sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: ranking-sources-dev10
+          path: F00F/OUT/
+          retention-days: 7

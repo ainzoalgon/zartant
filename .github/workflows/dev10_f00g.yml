@@ -1,0 +1,68 @@
+name: DEV10 — F00G Orchestrateur
+
+on:
+  workflow_dispatch:
+    inputs:
+      pack_id:
+        description: "Identifiant du pack à traiter"
+        required: true
+        type: string
+      bridge_url:
+        description: "URL du bridge Perturabo (optionnel)"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  f00g:
+    name: "F00G — Orchestrateur"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Préparer le pack
+        run: |
+          mkdir -p F00G/IN
+          echo "Pack ID: ${{ inputs.pack_id }}"
+          echo "Bridge URL: ${{ inputs.bridge_url }}"
+
+      - name: Exécuter F00G
+        run: |
+          ARGS="--pack-id ${{ inputs.pack_id }}"
+          if [ -n "${{ inputs.bridge_url }}" ]; then
+            ARGS="$ARGS --bridge-url ${{ inputs.bridge_url }}"
+          fi
+          python3 F00G/CODEBASE/f00g.py $ARGS
+        env:
+          PERTURABO_BRIDGE_URL: ${{ inputs.bridge_url }}
+
+      - name: Vérifier la sortie
+        run: |
+          if [ ! -f F00G/OUT/workflow.json ]; then
+            echo "❌ workflow.json non généré"
+            exit 1
+          fi
+          echo "✅ Workflow généré :"
+          cat F00G/OUT/workflow.json
+
+      - name: Upload workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-dev10
+          path: F00G/OUT/
+          retention-days: 7
+
+      - name: Upload pack analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: pack-analysis-dev10
+          path: F00G/OUT/pack_analysis.json
+          retention-days: 7

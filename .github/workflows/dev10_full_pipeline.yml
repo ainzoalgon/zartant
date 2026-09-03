@@ -1,0 +1,177 @@
+name: DEV10 — Pipeline Complet
+
+on:
+  workflow_dispatch:
+    inputs:
+      pack_id:
+        description: "Identifiant du pack à traiter"
+        required: true
+        type: string
+      bridge_url:
+        description: "URL du bridge Perturabo (optionnel)"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  f00g:
+    name: "Étape 1 — F00G Orchestrateur"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.analyze.outputs.mode }}
+      workflow_artifact: ${{ steps.upload.outputs.artifact-id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Exécuter F00G
+        id: analyze
+        run: |
+          ARGS="--pack-id ${{ inputs.pack_id }}"
+          if [ -n "${{ inputs.bridge_url }}" ]; then
+            ARGS="$ARGS --bridge-url ${{ inputs.bridge_url }}"
+          fi
+          python3 F00G/CODEBASE/f00g.py $ARGS
+          
+          # Extraire le mode pour les jobs suivants
+          MODE=$(python3 -c "import json; print(json.load(open('F00G/OUT/workflow.json'))['mode'])")
+          echo "mode=$MODE" >> $GITHUB_OUTPUT
+        env:
+          PERTURABO_BRIDGE_URL: ${{ inputs.bridge_url }}
+
+      - name: Upload workflow
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-dev10
+          path: F00G/OUT/
+          retention-days: 7
+
+  f00f:
+    name: "Étape 2a — F00F Ranking"
+    needs: f00g
+    if: contains(needs.f00g.outputs.mode, 'ranking')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Télécharger workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: workflow-dev10
+          path: F00G/OUT/
+
+      - name: Exécuter F00F
+        run: |
+          python3 F00F/CODEBASE/f00f.py --workflow F00G/OUT/workflow.json
+
+      - name: Upload ranking
+        uses: actions/upload-artifact@v4
+        with:
+          name: ranking-sources-dev10
+          path: F00F/OUT/
+          retention-days: 7
+
+  f03_f04:
+    name: "Étape 3 — F03+F04 Render"
+    needs: [f00g, f00f]
+    if: always() && needs.f00g.result == 'success' && (needs.f00f.result == 'success' || needs.f00f.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Télécharger workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: workflow-dev10
+          path: F00G/OUT/
+
+      - name: Télécharger ranking (si présent)
+        if: needs.f00f.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: ranking-sources-dev10
+          path: F00F/OUT/
+
+      - name: Installer F03 Preview
+        working-directory: F03_PREVIEW/CODEBASE
+        run: npm ci
+
+      - name: Build F03
+        working-directory: F03_PREVIEW/CODEBASE
+        run: npm run build
+
+      - name: Render F04
+        working-directory: F03_PREVIEW/CODEBASE
+        run: npm run render
+        timeout-minutes: 15
+
+      - name: Upload rendu
+        uses: actions/upload-artifact@v4
+        with:
+          name: short-final-dev10
+          path: F03_PREVIEW/CODEBASE/out/short_final.mp4
+          retention-days: 7
+
+  f05_f06:
+    name: "Étape 4 — F05+F06 Finalisation"
+    needs: f03_f04
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Télécharger le rendu
+        uses: actions/download-artifact@v4
+        with:
+          name: short-final-dev10
+          path: F05_CAMOUFLAGE/IN/
+
+      - name: Exécuter F05 Camouflage
+        run: |
+          python3 F05_CAMOUFLAGE/CODEBASE/lac_f05_camouflage.py \
+            --input F05_CAMOUFLAGE/IN/short_final.mp4 \
+            --output F05_CAMOUFLAGE/OUT
+
+      - name: Exécuter F06 Luther
+        run: |
+          python3 F06_LUTHER/CODEBASE/lac_f06_luther.py \
+            --input F05_CAMOUFLAGE/OUT/short_camouflaged.mp4 \
+            --output F06_LUTHER/OUT
+
+      - name: Upload master final
+        uses: actions/upload-artifact@v4
+        with:
+          name: short-master-dev10
+          path: F06_LUTHER/OUT/short_master.mp4
+          retention-days: 30
