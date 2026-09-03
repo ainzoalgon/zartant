@@ -1,0 +1,378 @@
+/**
+ * Styles pour le mode PUR de F03 Preview
+ */
+
+/* ── Conteneur principal ────────────────────────────────────────────────── */
+
+.pur-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #1a1a2e;
+  color: #eaeaea;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ── Sélecteur de mode ──────────────────────────────────────────────────── */
+
+.pur-mode-selector {
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+  padding: 8px;
+}
+
+.pur-mode-tabs {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+}
+
+.pur-mode-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #8892b0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.pur-mode-tab:hover {
+  background: #0f3460;
+  color: #ccd6f6;
+}
+
+.pur-mode-tab.active {
+  background: #0f3460;
+  border-color: #64ffda;
+  color: #64ffda;
+}
+
+.pur-mode-icon {
+  font-size: 18px;
+}
+
+.pur-mode-label {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ── Panel de contenu ───────────────────────────────────────────────────── */
+
+.pur-panel-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+/* ── Sections ────────────────────────────────────────────────────────────── */
+
+.panel-section {
+  background: #16213e;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid #0f3460;
+}
+
+.panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #ccd6f6;
+  margin: 0 0 12px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #0f3460;
+}
+
+/* ── Contrôles ───────────────────────────────────────────────────────────── */
+
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.control-row label {
+  flex: 0 0 120px;
+  font-size: 12px;
+  color: #8892b0;
+}
+
+.control-row input[type="range"] {
+  flex: 1;
+  height: 4px;
+  background: #0f3460;
+  border-radius: 2px;
+  outline: none;
+  -webkit-appearance: none;
+}
+
+.control-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  background: #64ffda;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.control-row input[type="text"],
+.control-row input[type="number"] {
+  flex: 1;
+  padding: 6px 8px;
+  background: #0a0a1a;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  color: #ccd6f6;
+  font-size: 12px;
+}
+
+.control-row input[type="color"] {
+  width: 32px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.control-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #64ffda;
+}
+
+.control-row select {
+  flex: 1;
+  padding: 6px 8px;
+  background: #0a0a1a;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  color: #ccd6f6;
+  font-size: 12px;
+}
+
+.control-value {
+  flex: 0 0 50px;
+  text-align: right;
+  font-size: 12px;
+  color: #64ffda;
+}
+
+/* ── Boutons toggle ──────────────────────────────────────────────────────── */
+
+.toggle-group {
+  display: flex;
+  gap: 4px;
+}
+
+.toggle-btn {
+  padding: 6px 12px;
+  background: #0a0a1a;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  color: #8892b0;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.toggle-btn:hover {
+  background: #0f3460;
+  color: #ccd6f6;
+}
+
+.toggle-btn.active {
+  background: #0f3460;
+  border-color: #64ffda;
+  color: #64ffda;
+}
+
+/* ── Navigation des scènes ──────────────────────────────────────────────── */
+
+.scene-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 8px;
+  background: #0a0a1a;
+  border-radius: 4px;
+}
+
+.scene-navigation button {
+  padding: 4px 8px;
+  background: #0f3460;
+  border: none;
+  border-radius: 4px;
+  color: #ccd6f6;
+  cursor: pointer;
+}
+
+.scene-navigation button:hover:not(:disabled) {
+  background: #1a4a7a;
+}
+
+.scene-navigation button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.scene-navigation span {
+  font-size: 12px;
+  color: #8892b0;
+}
+
+/* ── Éditeur de scène ───────────────────────────────────────────────────── */
+
+.scene-editor {
+  background: #0a0a1a;
+  border-radius: 4px;
+  padding: 12px;
+  margin-top: 8px;
+}
+
+/* ── Boutons d'action ────────────────────────────────────────────────────── */
+
+.btn-add {
+  width: 100%;
+  padding: 8px;
+  margin-top: 8px;
+  background: #0f3460;
+  border: 1px dashed #64ffda;
+  border-radius: 4px;
+  color: #64ffda;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-add:hover {
+  background: #1a4a7a;
+}
+
+.btn-delete {
+  width: 100%;
+  padding: 8px;
+  margin-top: 8px;
+  background: transparent;
+  border: 1px solid #ff6b6b;
+  border-radius: 4px;
+  color: #ff6b6b;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-delete:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.1);
+}
+
+.btn-delete:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.btn-remove {
+  padding: 2px 6px;
+  background: transparent;
+  border: 1px solid #ff6b6b;
+  border-radius: 4px;
+  color: #ff6b6b;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+/* ── Timeline ────────────────────────────────────────────────────────────── */
+
+.timeline-container {
+  margin-top: 8px;
+}
+
+.timeline-bar {
+  display: flex;
+  height: 24px;
+  background: #0a0a1a;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.timeline-segment {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f3460;
+  border-right: 1px solid #1a1a2e;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.timeline-segment:hover {
+  background: #1a4a7a;
+}
+
+.timeline-segment.active {
+  background: #64ffda;
+  color: #0a0a1a;
+}
+
+.segment-label {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.timeline-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10px;
+  color: #8892b0;
+}
+
+/* ── Keyframes ───────────────────────────────────────────────────────────── */
+
+.keyframes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.keyframe-item {
+  background: #0a0a1a;
+  border-radius: 4px;
+  padding: 8px;
+}
+
+.keyframe-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #8892b0;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+
+.pur-panel-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.pur-panel-content::-webkit-scrollbar-track {
+  background: #1a1a2e;
+}
+
+.pur-panel-content::-webkit-scrollbar-thumb {
+  background: #0f3460;
+  border-radius: 3px;
+}
+
+.pur-panel-content::-webkit-scrollbar-thumb:hover {
+  background: #1a4a7a;
+}
