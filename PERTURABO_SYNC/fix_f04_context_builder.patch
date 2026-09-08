@@ -1,0 +1,144 @@
+From 7d28c4eb76ed283fc4118c96c01c380456d7a200 Mon Sep 17 00:00:00 2001
+From: kioka8877-ux <kioka8877@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 05:25:55 +0000
+Subject: [PATCH] =?UTF-8?q?fix(F04):=20prune=20transcripts=20+=20budget=20?=
+ =?UTF-8?q?contexte=20=E2=80=94=20contexte=205.2MB=20->=2027KB?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Le run ee109a8 échouait : HTTP 400, contexte 1 373 335 tokens vs
+1 048 576 max (kimi-k3). Cause : collect_archivum() walkait les 210
+transcripts word-level (19.5 MB) dans le prompt du premium.
+
+- _walk() prune les sous-dossiers transcripts/ partout (doctrine :
+  le premium ne voit que les survivants, jamais le flot brut — le
+  specimen VOX fournit déjà segment + top_words)
+- os.walk itéré lazy (un sorted() épuisait le générateur avant la
+  prune — attrapé par le test local)
+- Garde-fou MAX_ARCHIVUM_CHARS=200k après assemblage : l'ARCHIVUM
+  peut grossir sans jamais re-exploser le prompt
+- skip_transcripts=True du chemin LOGO préservé (no-op désormais)
+
+Mesuré : contexte 5.2 MB -> 26 856 chars (~7k tokens).
+
+🤖 Generated with Codebuff
+Co-Authored-By: Codebuff <noreply@codebuff.com>
+---
+ .../CODEBASE/libs/context_builder.py          | 64 +++++++++++++++++--
+ 1 file changed, 59 insertions(+), 5 deletions(-)
+
+diff --git a/MONDES_FORGES/CLIPPING/F04_COPYWRITER/CODEBASE/libs/context_builder.py b/MONDES_FORGES/CLIPPING/F04_COPYWRITER/CODEBASE/libs/context_builder.py
+index e982890..1a417e9 100644
+--- a/MONDES_FORGES/CLIPPING/F04_COPYWRITER/CODEBASE/libs/context_builder.py
++++ b/MONDES_FORGES/CLIPPING/F04_COPYWRITER/CODEBASE/libs/context_builder.py
+@@ -20,12 +20,25 @@ contexte structuré consommé par le modèle premium (Phase B) :
+ Chaque fichier est tronqué à MAX_FILE_CHARS pour rester dans le contexte
+ du modèle premium sans diluer. Les fichiers manquants sont tracés
+ ("introuvable") — la frégate n'invente jamais une source absente.
++
++Doctrine (le premium ne voit que les survivants, jamais le flot brut) :
++  - Les transcripts word-level bruts (ARCHIVUM/*/transcripts/) ne sont
++    JAMAIS chargés dans le contexte — le specimen VOX fournit déjà le
++    segment exact + les top_words.
++  - Un budget global MAX_ARCHIVUM_CHARS plafonne le contexte assemblé :
++    si le total dépasse, les plus gros fichiers embarqués sont tronqués.
++    L'ARCHIVUM peut grossir sans jamais re-exploser le prompt premium.
+ """
+ 
+ import json
+ import os
+ 
+ MAX_FILE_CHARS = 30000
++MAX_ARCHIVUM_CHARS = 200000
++
++# Sous-dossiers exclus du walk partout (transcripts bruts = flot interdit
++# au premium, conformément à la doctrine VOX).
++PRUNE_DIRS = ("transcripts",)
+ 
+ 
+ class ContextBuilder:
+@@ -59,18 +72,59 @@ class ContextBuilder:
+             return content[:MAX_FILE_CHARS] + "\n[... TRONQUÉ — source > 30k chars]"
+         return content
+ 
+-    def _walk(self, root: str, label: str, extensions: tuple = (".md", ".json", ".txt")) -> dict:
++    def _walk(self, root: str, label: str,
++              extensions: tuple = (".md", ".json", ".txt"),
++              prune_dirs: tuple = PRUNE_DIRS) -> dict:
+         result = {}
+         if not os.path.isdir(root):
+             return result
+-        for dirpath, _dirs, files in sorted(os.walk(root)):
++        # ⚠️ os.walk doit être itéré DIRECTEMENT (lazy) : un sorted() sur le
++        # générateur l'épuiserait AVANT la modification de dirs, et la prune
++        # serait sans effet. Le tri déterministe se fait sur le dict final.
++        for dirpath, dirs, files in os.walk(root):
++            # Prune des sous-dossiers interdits (transcripts bruts) — on ne
++            # descend jamais dedans, et on skip si le walk démarre dedans.
++            dirs[:] = [d for d in dirs if d not in prune_dirs]
++            if os.path.basename(dirpath) in prune_dirs:
++                continue
+             for name in sorted(files):
+                 if name.startswith(".") or not name.endswith(extensions):
+                     continue
+                 full = os.path.join(dirpath, name)
+                 rel = os.path.relpath(full, root).replace("\\", "/")
+                 result[rel] = self._read(full, f"{label}/{rel}")
+-        return result
++        return {k: result[k] for k in sorted(result)}
++
++    # ------------------------------------------------------------------
++    def _enforce_budget(self, archivum: dict,
++                        budget: int = MAX_ARCHIVUM_CHARS) -> dict:
++        """Garde-fou anti-récidive : si le total assemblé dépasse le budget,
++        tronque les plus gros fichiers embarqués jusqu'à repasser sous.
++
++        Le contexte ne peut plus jamais exploser, même si l'ARCHIVUM grossit.
++        """
++        holders: list[tuple[int, dict, str]] = []
++        total = 0
++        for section, value in archivum.items():
++            if isinstance(value, dict):
++                for rel, content in value.items():
++                    if isinstance(content, str):
++                        holders.append((len(content), value, rel))
++                        total += len(content)
++            elif isinstance(value, str):
++                holders.append((len(value), archivum, section))
++                total += len(value)
++        if total <= budget:
++            return archivum
++        holders.sort(key=lambda h: h[0], reverse=True)
++        for size, holder, key in holders:
++            if total <= budget:
++                break
++            keep = max(0, size - (total - budget))
++            marker = "\n[... TRONQUÉ — budget contexte MAX_ARCHIVUM_CHARS]"
++            holder[key] = holder[key][:keep] + marker
++            total -= size - keep
++        return archivum
+ 
+     # ------------------------------------------------------------------
+     def collect_archivum(self, platform: str, market: str,
+@@ -93,7 +147,7 @@ class ContextBuilder:
+                 if not k.split("/", 1)[0] == "transcripts"
+             }
+ 
+-        return {
++        return self._enforce_budget({
+             "copywriting_8_sous_dossiers": self._walk(copywriting_root, "copywriting"),
+             "rules": self._walk(rules_root, "rules"),
+             "platform_profile": self._read(platform_profile, f"{platform}_profile.md"),
+@@ -107,7 +161,7 @@ class ContextBuilder:
+             "demons": self._walk(demons_dir, "demons"),
+             "knowledge_base": knowledge_base,
+             "learnings": self._read(learnings_path, "learnings.json"),
+-        }
++        })
+ 
+     def collect_contracts(self) -> dict:
+         doctrine = self._read(
+-- 
+2.34.1
+
