@@ -1,0 +1,638 @@
+From c56c6aaa308a50f2504b6925898dcc6831a64f66 Mon Sep 17 00:00:00 2001
+From: kioka8877-ux <kioka8877@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 11:54:42 +0000
+Subject: [PATCH] =?UTF-8?q?feat(F04):=20contrat=20op=C3=A9rateur=20?=
+ =?UTF-8?q?=E2=80=94=20assets=20=C3=A0=20la=20demande=20(overlay/ranking?=
+ =?UTF-8?q?=20x=20N=20clips)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Le workflow n'impose plus le pack ranking : le Warsmith décide ce que
+F04 produit, via les inputs du workflow_dispatch.
+
+- pur_adapter_direct : --nb-videos 1-10 (tronque les candidats VOX aux
+  N premiers) + --asset-mode ranking|blur|split|overlay_only, propagé
+  dans angles.json et specimens
+- copywriter : --generate-overlay (Phase B assets, prompt overlay_only
+  1-2 lignes ou ranking ≤4 mots + labels + métadonnées + tags/#
+  directives + exemple_description opérateur) et --finalize-overlay
+  (validation IRON : ≤4 mots si ranking, ≤2 lignes sinon, hérésie sinon)
+- workflow : inputs nb_videos/asset_mode/example_description, écrit
+  IN/operator_brief.json, boucle setup-context -> generate-overlay ->
+  finalize-overlay sur les N angles
+- Doctrine : la voix est déjà sur le clip — JAMAIS de script/narration
+- Tracking : CONTINUATION_F00.md + GUIDE 13 à jour
+
+Testé localement : adaptateur 3 clips blur, dry-run premium, finalize
+blur (5 mots OK) et ranking (5 mots refusé / 4 mots accepté).
+
+🤖 Generated with Codebuff
+Co-Authored-By: Codebuff <noreply@codebuff.com>
+---
+ .../workflows/perturabo_f04_copywriting.yml   |  68 ++++-
+ CONTINUATION_F00.md                           |  54 ++++
+ .../F04_COPYWRITER/CODEBASE/copywriter.py     | 277 ++++++++++++++++++
+ .../13_MODE_PUR_VOX_ET_CAMPAGNES.md           |  43 +++
+ MONDES_FORGES/CLIPPING/pur_adapter_direct.py  |  20 +-
+ 5 files changed, 447 insertions(+), 15 deletions(-)
+
+diff --git a/.github/workflows/perturabo_f04_copywriting.yml b/.github/workflows/perturabo_f04_copywriting.yml
+index 1912707..c999dbe 100644
+--- a/.github/workflows/perturabo_f04_copywriting.yml
++++ b/.github/workflows/perturabo_f04_copywriting.yml
+@@ -19,6 +19,18 @@ on:
+         description: 'Marché cible'
+         required: false
+         default: 'us_young_english'
++      nb_videos:
++        description: 'Nombre de vidéos finales (1-10) — détermine le nombre d''assets'
++        required: false
++        default: '1'
++      asset_mode:
++        description: 'Type de contenu : ranking | blur | split | overlay_only'
++        required: false
++        default: 'ranking'
++      example_description:
++        description: 'Exemple de description fourni par l''opérateur (guide F04)'
++        required: false
++        default: ''
+ 
+ jobs:
+   copywriting:
+@@ -35,13 +47,15 @@ jobs:
+         with:
+           python-version: '3.11'
+ 
+-      - name: Adaptateur PUR direct (VOX -> angles + specimen)
++      - name: Adaptateur PUR direct (VOX -> angles + specimen, contrat opérateur)
+         run: |
+           python MONDES_FORGES/CLIPPING/pur_adapter_direct.py \
+             --candidats "${{ inputs.candidats_path }}" \
+             --vod "${{ inputs.vod_url }}" \
+             --platform "${{ inputs.platform }}" \
+-            --market "${{ inputs.market }}"
++            --market "${{ inputs.market }}" \
++            --nb-videos "${{ inputs.nb_videos }}" \
++            --asset-mode "${{ inputs.asset_mode }}"
+ 
+       - name: Write fresh liber (mode whop, overrides stale logo/meme_v2)
+         run: |
+@@ -53,11 +67,28 @@ jobs:
+             "campaign_status": "active",
+             "inputs_warsmith": {
+               "platform_target": "${{ inputs.platform }}",
+-              "market_target": "${{ inputs.market }}"
++              "market_target": "${{ inputs.market }}",
++              "nb_videos_finales": ${{ inputs.nb_videos || 1 }},
++              "asset_mode": "${{ inputs.asset_mode || 'ranking' }}",
++              "exemple_description": "${{ inputs.example_description }}"
+             }
+           }
+           EOF
+-          echo "liber_clipping.json -> mode whop (flux PUR direct)"
++          echo "liber_clipping.json -> mode whop (flux PUR direct + contrat opérateur)"
++
++      - name: Write operator_brief (contrat opérateur pour F04)
++        run: |
++          mkdir -p MONDES_FORGES/CLIPPING/F04_COPYWRITER/IN
++          cat > MONDES_FORGES/CLIPPING/F04_COPYWRITER/IN/operator_brief.json <<'EOF'
++          {
++            "nb_videos_finales": ${{ inputs.nb_videos || 1 }},
++            "asset_mode": "${{ inputs.asset_mode || 'ranking' }}",
++            "platform_target": "${{ inputs.platform }}",
++            "market_target": "${{ inputs.market }}",
++            "exemple_description": "${{ inputs.example_description }}"
++          }
++          EOF
++          echo "operator_brief.json -> contrat opérateur en place"
+ 
+       - name: Write copywriter_secrets.json (NVIDIA, provider other)
+         run: |
+@@ -74,25 +105,34 @@ jobs:
+           EOF
+           echo "copywriter_secrets.json -> NVIDIA (kimi-k3)"
+ 
+-      - name: F04 setup-context (premier angle)
+-        run: |
+-          python MONDES_FORGES/CLIPPING/F04_COPYWRITER/CODEBASE/copywriter.py \
+-            --setup-context --angle A01 --platform "${{ inputs.platform }}" --market "${{ inputs.market }}"
+-
+-      - name: F04 generate (premium direct) + ordonnance + finalize (A01)
++      - name: F04 assets par clip (contrat opérateur — boucle sur N angles)
+         run: |
++          NB="${{ inputs.nb_videos || 1 }}"
++          MODE="${{ inputs.asset_mode || 'ranking' }}"
++          NB=$(( NB < 1 ? 1 : (NB > 10 ? 10 : NB) ))
++          ANGLES=$(python3 -c "print(','.join('A%02d' % i for i in range(1, int('$NB')+1)))")
++          echo "Contrat opérateur : $NB clip(s), mode $MODE, angles=[$ANGLES]"
+           cd MONDES_FORGES/CLIPPING/F04_COPYWRITER/CODEBASE
+-          python copywriter.py --generate --angle A01 --force
+-          python copywriter.py --ordonnance --angle A01 --auto-ord
+-          python copywriter.py --finalize --angle A01
++          IFS=',' read -ra LIST <<< "$ANGLES"
++          for ANGLE in "${LIST[@]}"; do
++            echo "=== CLIP $ANGLE ==="
++            python copywriter.py --setup-context --angle "$ANGLE" \
++              --platform "${{ inputs.platform }}" --market "${{ inputs.market }}"
++            python copywriter.py --generate-overlay --angle "$ANGLE" \
++              --asset-mode "$MODE" --example-description "${{ inputs.example_description }}"
++            python copywriter.py --finalize-overlay --angle "$ANGLE" \
++              --asset-mode "$MODE"
++          done
+ 
+       - name: Commit copywriting output (ARCHIVUM only)
+         run: |
+           git config user.name "OracleF04"
+           git config user.email "oracle@perturabo.iron"
+           mkdir -p MONDES_FORGES/CLIPPING/ARCHIVUM/copywriting
++          cp MONDES_FORGES/CLIPPING/F04_COPYWRITER/OUT/overlay_payload_*.json MONDES_FORGES/CLIPPING/ARCHIVUM/copywriting/ 2>/dev/null || true
++          cp MONDES_FORGES/CLIPPING/F04_COPYWRITER/OUT/overlay_payload_*.md   MONDES_FORGES/CLIPPING/ARCHIVUM/copywriting/ 2>/dev/null || true
+           cp MONDES_FORGES/CLIPPING/F04_COPYWRITER/OUT/text_payload_*.json MONDES_FORGES/CLIPPING/ARCHIVUM/copywriting/ 2>/dev/null || true
+           cp MONDES_FORGES/CLIPPING/F04_COPYWRITER/OUT/text_payload_*.md   MONDES_FORGES/CLIPPING/ARCHIVUM/copywriting/ 2>/dev/null || true
+           git add MONDES_FORGES/CLIPPING/ARCHIVUM/copywriting
+-          git commit -m "[F04] copywriting PUR -> ARCHIVUM/copywriting" || echo "nothing to commit"
++          git commit -m "[F04] copywriting PUR (${{ inputs.asset_mode }} x${{ inputs.nb_videos }}) -> ARCHIVUM/copywriting" || echo "nothing to commit"
+           git push origin HEAD:main
+diff --git a/CONTINUATION_F00.md b/CONTINUATION_F00.md
+index 8e2d2fb..4245717 100644
+--- a/CONTINUATION_F00.md
++++ b/CONTINUATION_F00.md
+@@ -435,3 +435,57 @@ détecté + scoré + sélectionné. La viralité est gérée par VOX ; F04 écri
+ 
+ ### Reste
+ Lancer F04 pour produire le text_payload (3 titres + reframing + caption + hashtags).
++
++
++---
++
++## Session 2026-09-08 (contrat opérateur F04 : assets à la demande)
++
++### Décision doctrine
++Le Warsmith décide CE QUE F04 produit. Le workflow n'impose plus le pack
++"ranking" par défaut. Deux modes d'assets, choisis à l'exécution :
++
++- **overlay_only** (blur, split…) : UN titre overlay de 1-2 lignes par clip.
++  C'est LUI qui donne le sens, rend le clip relevant et viral. Rien d'autre.
++- **ranking** : 3 livrables par clip —
++  1. titre overlay **max 4 mots** (règle ranking stricte, pas 2 lignes)
++  2. **labels** : le titre pour chaque numéro de classement
++  3. **titre métadonnée + description** (inspirée du modèle de la directive
++     campagne) + **tags et hashtags issus des directives**
++
++La voix est déjà sur le clip (on coupe une séquence) : F04 n'écrit JAMAIS
++de script/narration, dans aucun mode.
++
++Le nombre de vidéos finales (1-10) est aussi une décision opérateur : il
++détermine le nombre d'angles/clip packs produits par l'adaptateur.
++
++### Livré
++- `pur_adapter_direct.py` : `--nb-videos N` (1-10, tronque les candidats VOX
++  aux N premiers) + `--asset-mode ranking|blur|split|overlay_only`. L'asset_mode
++  est propagé dans angles.json (niveau doc ET angle) + specimens.
++- `F04_COPYWRITER/CODEBASE/copywriter.py` :
++  - `--generate-overlay` (Phase B assets) : appel premium direct, sortie
++    `OUT/overlay_raw_<angle>.json`. Prompt overlay_only (1-2 lignes) ou
++    ranking (≤4 mots + labels + métadonnées) selon le contrat.
++  - `--finalize-overlay` (Phase D assets) : validation IRON locale
++    (overlay ≤4 mots si ranking, ≤2 lignes sinon — hérésie sinon) +
++    `OUT/overlay_payload_<angle>.json` + `.md` lisible opérateur.
++  - Contrat lu depuis `IN/operator_brief.json` ou flags CLI
++    (`--asset-mode`, `--example-description`).
++- `.github/workflows/perturabo_f04_copywriting.yml` : nouveaux inputs
++  `nb_videos` (1-10), `asset_mode`, `example_description`. Écrit
++  `IN/operator_brief.json` puis boucle setup-context → generate-overlay →
++  finalize-overlay sur les N angles. Commit copie overlay_payload_* +
++  text_payload_* vers ARCHIVUM/copywriting.
++
++### Testé (local, sans réseau)
++- Adaptateur : nb_videos=3 + asset_mode=blur -> 3 angles A01-A03 + 3 specimens.
++- Dry-run premium : prompt overlay_only correct (schema 1-2 lignes).
++- Finalize blur : overlay 5 mots accepté (libre). Finalize ranking : 5 mots
++  refusé (hérésie), 4 mots accepté + payload ranking complet (labels,
++  métadonnées, tags).
++
++### Reste
++- Pousser sur PERTURABO puis lancer le workflow avec le contrat opérateur
++  (ex : nb_videos=5, asset_mode=blur).
++- Iron Sentinel — Capteurs : dernier run en échec (ee109a83), à diagnostiquer.
+diff --git a/MONDES_FORGES/CLIPPING/F04_COPYWRITER/CODEBASE/copywriter.py b/MONDES_FORGES/CLIPPING/F04_COPYWRITER/CODEBASE/copywriter.py
+index 5b81d58..2522a49 100644
+--- a/MONDES_FORGES/CLIPPING/F04_COPYWRITER/CODEBASE/copywriter.py
++++ b/MONDES_FORGES/CLIPPING/F04_COPYWRITER/CODEBASE/copywriter.py
+@@ -740,6 +740,266 @@ def cmd_generate(args):
+     print("[F04] Lancer --ordonnance pour la Phase C (IRON)")
+ 
+ 
++# ----------------------------------------------------------------------
++# ASSETS — modes opérateur (overlay_only | ranking)
++# Le contrat opérateur décide ce que F04 produit :
++#   - overlay_only (blur/split/…) : UN titre overlay 1-2 lignes par clip,
++#     qui change le sens du clip et le rend viral. RIEN d'autre.
++#   - ranking : overlay <= 4 mots + labels (titre par numéro) + titre
++#     métadonnée + description (modèle directive) + tags/# directives.
++# La voix est déjà sur le clip (clipping, pas de script/narration jamais).
++# ----------------------------------------------------------------------
++OVERLAY_MAX_WORDS_RANKING = 4
++OVERLAY_MAX_CHARS_RANKING = 40
++OVERLAY_MAX_LINES_FREE = 2
++
++
++def _load_operator_brief(args) -> dict:
++    """Contrat opérateur : workflow_dispatch (--asset-mode/--example-description)
++    > IN/operator_brief.json > défaut (ranking)."""
++    brief = {}
++    brief_path = os.path.join(IN_DIR, "operator_brief.json")
++    if os.path.exists(brief_path):
++        try:
++            brief = load_json(brief_path)
++        except (json.JSONDecodeError, OSError) as e:
++            print(f"[F04] operator_brief.json illisible ({e}) — défauts utilisés")
++    if getattr(args, "asset_mode", None):
++        brief["asset_mode"] = args.asset_mode
++    if getattr(args, "example_description", None):
++        brief["exemple_description"] = args.example_description
++    brief.setdefault("asset_mode", "ranking")
++    return brief
++
++
++def _overlay_free_prompt(context: dict, brief: dict) -> dict:
++    """Prompt overlay-only : UN titre 1-2 lignes porteur de sens."""
++    return {
++        "mission": (
++            "Forge UN SEUL titre overlay (1 à 2 lignes max, style racourci) "
++            "pour CET angle : c'est LUI qui donne le sens du clip, le rend "
++            "relevant et viral. La voix est déjà sur la vidéo (on coupe une "
++            "séquence, on n'écrit pas de script). Utilise toute la puissance "
++            "de l'ARCHIVUM (viralité, copywriting, directive, trend, learnings). "
++            "Réponds en JSON strict conforme au schéma ci-dessous."
++        ),
++        "asset_mode": "overlay_only",
++        "content_type": brief.get("asset_mode"),
++        "exemple_description_operateur": brief.get("exemple_description"),
++        "campaign_id": context.get("campaign_id"),
++        "angle_id": context.get("angle_id"),
++        "angle": context.get("angle"),
++        "specimen_source": context.get("specimen"),
++        "verdict": context.get("verdict"),
++        "platform_target": context.get("platform_target"),
++        "market_target": context.get("market_target"),
++        "archivum": context.get("archivum"),
++        "output_schema": {
++            "overlay_title": "...  (1-2 lignes max, MAX 60 chars/ligne)",
++            "overlay_lines": 1,
++            "rationale": "pourquoi ce titre change le sens et rend le clip viral",
++        },
++        "heresies_interdites": [
++            "Script ou narration (on fait du clipping, la voix existe déjà)",
++            "Clickbait sans payoff (le titre doit livrer dans la vidéo)",
++            "Reframing qui ment sur le contenu source (anti-cond)",
++            "Overlay > 2 lignes",
++        ],
++    }
++
++
++def _overlay_ranking_prompt(context: dict, brief: dict) -> dict:
++    """Prompt ranking : overlay <=4 mots + labels + titre métadonnée +
++    description (modèle directive) + tags/# (directives)."""
++    return {
++        "mission": (
++            "Forge les assets RANKING complets pour CET angle : "
++            "1) overlay_title de 4 mots MAX (règle ranking stricte, pas 2 lignes) ; "
++            "2) labels : le titre pour chaque numéro de classement ; "
++            "3) metadata_title + description inspirée du modèle de la directive "
++            "campagne + tags et hashtags issus des directives. "
++            "La voix est déjà sur la vidéo (clipping — jamais de script). "
++            "Réponds en JSON strict conforme au schéma ci-dessous."
++        ),
++        "asset_mode": "ranking",
++        "exemple_description_operateur": brief.get("exemple_description"),
++        "campaign_id": context.get("campaign_id"),
++        "angle_id": context.get("angle_id"),
++        "angle": context.get("angle"),
++        "specimen_source": context.get("specimen"),
++        "verdict": context.get("verdict"),
++        "platform_target": context.get("platform_target"),
++        "market_target": context.get("market_target"),
++        "archivum": context.get("archivum"),
++        "output_schema": {
++            "overlay_title": "...  (MAX 4 mots)",
++            "labels": ["...", "...", "..."],
++            "metadata_title": "...",
++            "description": "... (inspirée du modèle de la directive campagne)",
++            "tags": ["..."],
++            "hashtags": ["#...", "#..."],
++            "compliance": {"disclosure": "#ad", "ftc_required": True},
++        },
++        "heresies_interdites": [
++            "Script ou narration (on fait du clipping)",
++            "Overlay > 4 mots en mode ranking",
++            "Clickbait sans payoff",
++            "Reframing qui ment sur le contenu source (anti-cond)",
++            "Tags/hashtags absents des directives",
++        ],
++    }
++
++
++def cmd_generate_overlay(args):
++    """Phase B assets : appel premium direct, sortie overlay_raw_<angle>.json."""
++    angle = find_angle(args.angle)
++    context = _load_context(args.angle)
++    brief = _load_operator_brief(args)
++    ranking = brief.get("asset_mode") == "ranking"
++
++    system_prompt = ""
++    if os.path.exists(SYSTEM_PROMPT_PATH):
++        system_prompt = read_text(SYSTEM_PROMPT_PATH)
++    if not system_prompt or PLACEHOLDER_MARKER in system_prompt:
++        system_prompt = (
++            "Tu es F04_COPYWRITER, frégate copywriting du forge CLIPPING. "
++            "Tu forges des assets de clipping viraux. La voix est déjà sur le "
++            "clip — tu n'écris JAMAIS de script ou de narration. En mode "
++            "overlay_only tu produis UN titre overlay 1-2 lignes qui change le "
++            "sens du clip ; en mode ranking tu produis overlay <=4 mots + labels "
++            "+ titre métadonnée + description + tags/hashtags conformes à la "
++            "directive. Réponds en JSON strict conforme au schéma fourni."
++        )
++
++    user_prompt = (_overlay_ranking_prompt(context, brief) if ranking
++                   else _overlay_free_prompt(context, brief))
++
++    client = PremiumClient(_FORGE_ROOT)
++    if getattr(args, "dry_run", False):
++        call = {
++            "mode": "dry-run — aucun appel réseau",
++            "asset_mode": brief.get("asset_mode"),
++            "model_id": client.config.get("model_id", "<model_premium_id>"),
++            "system_prompt": system_prompt,
++            "user_prompt": user_prompt,
++        }
++        out = os.path.join(IN_DIR, f"premium_call_{args.angle}.json")
++        save_json(out, call)
++        print(f"[F04:ASSETS] Phase B (dry-run) : {out}")
++        return
++
++    if not client._api_key():
++        print("[F04:ASSETS] Clé premium absente — définir CLIPPING_PREMIUM_API_KEY")
++        sys.exit(1)
++
++    client.require_config()
++    result = client.chat(system_prompt=system_prompt,
++                         user_prompt=json.dumps(user_prompt, indent=2, ensure_ascii=False))
++    if not result:
++        print("[F04:ASSETS] Échec premium — overlay_raw absent")
++        sys.exit(1)
++    try:
++        raw = json.loads(client.extract_json(result))
++    except (json.JSONDecodeError, ValueError) as e:
++        fallback = os.path.join(OUT_DIR, f"overlay_raw_{args.angle}.txt")
++        with open(fallback, "w", encoding="utf-8") as f:
++            f.write(result)
++        print(f"[F04:ASSETS] Sortie premium non-JSON: {e} — brute conservée : {fallback}")
++        sys.exit(1)
++
++    raw["campaign_id"] = context.get("campaign_id")
++    raw["angle_id"] = args.angle
++    raw["asset_mode"] = brief.get("asset_mode")
++    out = os.path.join(OUT_DIR, f"overlay_raw_{args.angle}.json")
++    save_json(out, raw)
++    print(f"[F04:ASSETS] Phase B : {out}")
++
++
++def cmd_finalize_overlay(args):
++    """Phase D assets : validation IRON locale + overlay_payload_<angle>.json/.md."""
++    raw_path = os.path.join(OUT_DIR, f"overlay_raw_{args.angle}.json")
++    if not os.path.exists(raw_path):
++        print(f"[F04:ASSETS] overlay_raw introuvable: {raw_path}")
++        print("[F04:ASSETS] Lancer --generate-overlay d'abord (Phase B)")
++        sys.exit(1)
++    raw = load_json(raw_path)
++    context = _load_context(args.angle)
++    brief = _load_operator_brief(args)
++    ranking = brief.get("asset_mode") == "ranking"
++
++    overlay = str(raw.get("overlay_title", "") or "").strip()
++    if not overlay:
++        print("[F04:ASSETS] HÉRÉSIE : overlay_title vide — finalize refusé")
++        sys.exit(1)
++    if ranking:
++        words = len(overlay.split())
++        if words > OVERLAY_MAX_WORDS_RANKING:
++            print(f"[F04:ASSETS] HÉRÉSIE : overlay {words} mots (> {OVERLAY_MAX_WORDS_RANKING}) "
++                  "— règle ranking. Finalize refusé.")
++            sys.exit(1)
++    else:
++        lines = overlay.count("\n") + 1
++        if lines > OVERLAY_MAX_LINES_FREE:
++            print(f"[F04:ASSETS] HÉRÉSIE : overlay {lines} lignes (> {OVERLAY_MAX_LINES_FREE})")
++            sys.exit(1)
++
++    payload = {
++        "campaign_id": raw.get("campaign_id") or context.get("campaign_id"),
++        "angle_id": args.angle,
++        "asset_mode": raw.get("asset_mode"),
++        "content_type": brief.get("asset_mode"),
++        "overlay_title": overlay,
++        "overlay_lines": overlay.count("\n") + 1,
++        "rationale": str(raw.get("rationale", "") or "").strip() or None,
++    }
++    if ranking:
++        payload.update({
++            "labels": [str(l).strip() for l in (raw.get("labels") or [])
++                       if isinstance(l, str) and l.strip()],
++            "metadata_title": str(raw.get("metadata_title", "") or "").strip(),
++            "description": str(raw.get("description", "") or "").strip(),
++            "tags": [str(t).strip() for t in (raw.get("tags") or [])
++                     if isinstance(t, str) and t.strip()],
++            "hashtags": [str(h).strip() for h in (raw.get("hashtags") or [])
++                         if isinstance(h, str) and h.strip()],
++            "compliance": {"disclosure": "#ad", "ftc_required": True},
++        })
++    payload["check_in_iw_custos"] = now_iso()
++
++    out = os.path.join(OUT_DIR, f"overlay_payload_{args.angle}.json")
++    save_json(out, payload)
++
++    mode_label = "RANKING" if ranking else "OVERLAY"
++    lines_md = [
++        f"═══ CLIP {args.angle} — ASSETS {mode_label} ═══",
++        f"CAMPAGNE : {payload['campaign_id']}",
++        "",
++        "── TITRE OVERLAY (posé sur la vidéo) ──",
++        payload["overlay_title"],
++        "",
++    ]
++    if ranking:
++        lines_md += ["── LABELS (titre par numéro) ──"]
++        if payload["labels"]:
++            lines_md += [f"{i}. {label}" for i, label in enumerate(payload["labels"], 1)]
++        else:
++            lines_md += ["—"]
++        lines_md += [
++            "",
++            "── MÉTADONNÉES ──",
++            f"Titre : {payload['metadata_title']}",
++            f"Description : {payload['description']}",
++            f"Tags : {' '.join(payload['tags'])}",
++            f"Hashtags : {' '.join(payload['hashtags'])}",
++        ]
++    else:
++        lines_md += [f"Rationale : {payload['rationale'] or '—'}"]
++    md_path = os.path.join(OUT_DIR, f"overlay_payload_{args.angle}.md")
++    with open(md_path, "w", encoding="utf-8") as f:
++        f.write("\n".join(lines_md) + "\n")
++    print(f"[F04:ASSETS] Phase D : {out} + {md_path}")
++
++
+ # ----------------------------------------------------------------------
+ # Phase C — iron_ordonnancing
+ # ----------------------------------------------------------------------
+@@ -1190,6 +1450,15 @@ def main():
+                         help="Init system prompt malgré un fichier déjà figé / placeholder")
+     parser.add_argument("--sub-mode", default=None,
+                         help="Mode LOGO: informatif | humour | meme (auto-détecté sinon)")
++    parser.add_argument("--generate-overlay", action="store_true",
++                        help="Phase B ASSETS : generation premium overlay (modes operateur)")
++    parser.add_argument("--finalize-overlay", action="store_true",
++                        help="Phase D ASSETS : validation IRON + overlay_payload_<angle>")
++    parser.add_argument("--asset-mode", default=None,
++                        choices=["ranking", "blur", "split", "overlay_only"],
++                        help="Contrat operateur : type de contenu (override operator_brief)")
++    parser.add_argument("--example-description", default=None,
++                        help="Exemple de description fourni par l'operateur (guide F04)")
+     args = parser.parse_args()
+ 
+     try:
+@@ -1211,6 +1480,14 @@ def main():
+             if not args.angle:
+                 print("[F04] --angle requis pour --finalize"); sys.exit(1)
+             (cmd_finalize_logo if is_logo() else cmd_finalize)(args)
++        elif args.generate_overlay:
++            if not args.angle:
++                print("[F04] --angle requis pour --generate-overlay"); sys.exit(1)
++            cmd_generate_overlay(args)
++        elif args.finalize_overlay:
++            if not args.angle:
++                print("[F04] --angle requis pour --finalize-overlay"); sys.exit(1)
++            cmd_finalize_overlay(args)
+         else:
+             parser.print_help()
+     except PremiumClientError as e:
+diff --git a/MONDES_FORGES/CLIPPING/GUIDE_UTILISATION/13_MODE_PUR_VOX_ET_CAMPAGNES.md b/MONDES_FORGES/CLIPPING/GUIDE_UTILISATION/13_MODE_PUR_VOX_ET_CAMPAGNES.md
+index 1788bdf..c436a04 100644
+--- a/MONDES_FORGES/CLIPPING/GUIDE_UTILISATION/13_MODE_PUR_VOX_ET_CAMPAGNES.md
++++ b/MONDES_FORGES/CLIPPING/GUIDE_UTILISATION/13_MODE_PUR_VOX_ET_CAMPAGNES.md
+@@ -201,3 +201,46 @@ python ARCHIVUM/campaign/campaign_directive_parser.py \
+ ---
+ 
+ *Fer au-dedans, Fer au-dehors. Le siège continue.* 🔩
++
++
++---
++
++## Contrat opérateur F04 (2026-09-08) — assets à la demande
++
++L'opérateur décide CE QUE F04 produit via les inputs du workflow
++GitHub Actions (aucune édition manuelle de fichier) :
++
++| Input | Valeurs | Effet |
++|---|---|---|
++| `nb_videos` | 1-10 | Nombre de vidéos finales = nombre d'angles/clip packs |
++| `asset_mode` | `ranking` / `blur` / `split` / `overlay_only` | Type de contenu |
++| `example_description` | texte libre | Guide la description du pack ranking |
++| `platform` / `market` | inchangé | Cibles |
++
++Livrables F04 selon le mode :
++
++- **blur / split / overlay_only** → `overlay_payload_<angle>.json/.md` :
++  UN titre overlay de **1-2 lignes** par clip (porte tout le sens, rend le
++  clip viral — l'image est floutée/découpée).
++- **ranking** → `overlay_payload_<angle>.json/.md` avec 3 blocs :
++  1. `overlay_title` : **max 4 mots** (règle ranking stricte — validation
++     IRON refuse au-delà)
++  2. `labels` : titre pour chaque numéro de classement
++  3. `metadata_title` + `description` (modèle directive) + `tags` +
++     `hashtags` (issus des directives) + compliance FTC
++
++Dans TOUS les modes : jamais de script/narration — la voix est déjà sur le
++clip (on coupe une séquence, on ne produit pas une vidéo).
++
++Commandes locales équivalentes :
++
++```bash
++python MONDES_FORGES/CLIPPING/pur_adapter_direct.py \
++  --candidats <candidats.json> --vod <url> \
++  --nb-videos 5 --asset-mode blur
++
++cd F04_COPYWRITER/CODEBASE
++python copywriter.py --setup-context   --angle A01 --platform youtube_shorts --market us_young_english
++python copywriter.py --generate-overlay --angle A01 --asset-mode blur
++python copywriter.py --finalize-overlay --angle A01 --asset-mode blur
++```
+diff --git a/MONDES_FORGES/CLIPPING/pur_adapter_direct.py b/MONDES_FORGES/CLIPPING/pur_adapter_direct.py
+index 558ae37..d7a0ea2 100644
+--- a/MONDES_FORGES/CLIPPING/pur_adapter_direct.py
++++ b/MONDES_FORGES/CLIPPING/pur_adapter_direct.py
+@@ -16,10 +16,15 @@ Angles PUR : famille 'reframing' (hooks_pur.json), 1 angle par candidat VOX,
+ reframe_dim dérivé du type de signal détecté. Le copywriting premium (kimi-k3)
+ fait le vrai travail de formulation.
+ 
++Contrat opérateur (operator_brief) :
++  --nb-videos N     nombre de vidéos finales (1-10) -> N angles/clip packs
++  --asset-mode M    ranking | blur | split  (type de contenu demandé)
++
+ Usage :
+   python pur_adapter_direct.py \
+       --candidats F00B_VOX/OUT/candidats.json \
+-      --vod <url> --platform youtube_shorts --market us_young_english
++      --vod <url> --platform youtube_shorts --market us_young_english \
++      --nb-videos 5 --asset-mode blur
+ """
+ 
+ import argparse
+@@ -62,8 +67,15 @@ def main():
+     ap.add_argument("--vod", required=True)
+     ap.add_argument("--platform", default="youtube_shorts")
+     ap.add_argument("--market", default="us_young_english")
++    ap.add_argument("--nb-videos", type=int, default=1,
++                    help="Nombre de vidéos finales (1-10) — détermine le nombre d'assets")
++    ap.add_argument("--asset-mode", default="ranking",
++                    choices=["ranking", "blur", "split", "overlay_only"],
++                    help="Type de contenu demandé par l'opérateur")
+     args = ap.parse_args()
+ 
++    nb_videos = max(1, min(10, int(args.nb_videos or 1)))
++
+     # chemins relatifs au repo (l'adaptateur vit à MONDES_FORGES/CLIPPING/)
+     here = os.path.dirname(os.path.abspath(__file__))
+     clip_root = here  # MONDES_FORGES/CLIPPING
+@@ -74,6 +86,9 @@ def main():
+ 
+     cands = load_json(args.candidats)
+     candidates = cands.get("candidates", []) if isinstance(cands, dict) else cands
++    # L'opérateur décide du nombre de vidéos finales : on garde les N premiers
++    # candidats (déjà triés par priorité VOX).
++    candidates = candidates[:nb_videos]
+ 
+     angles = []
+     for i, c in enumerate(candidates):
+@@ -96,6 +111,7 @@ def main():
+             "weight": round(0.6 + float(intens) * 0.4, 3),
+             "vox_signal_type": sig,
+             "vox_intensity": intens,
++            "asset_mode": args.asset_mode,
+         })
+         # specimen par candidat (ce que F04 attend dans F03_SOURCE_HUNTER/OUT)
+         specimen = {
+@@ -124,6 +140,8 @@ def main():
+         "weighting_eligible": False,
+         "sub_mode": "pur",
+         "forge_mode": "premium",
++        "asset_mode": args.asset_mode,
++        "nb_videos_finales": nb_videos,
+         "angles": angles,
+     }
+     ang_path = os.path.join(f02_out, "angles.json")
+-- 
+2.34.1
+
